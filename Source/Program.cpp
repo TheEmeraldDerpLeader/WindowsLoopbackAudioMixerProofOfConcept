@@ -1,5 +1,6 @@
 #include <iostream>
 #include <string>
+#include <thread>
 
 #include <SFML/Graphics.hpp>
 #include <SFML/Audio.hpp>
@@ -11,6 +12,8 @@
 #include <audioclientactivationparams.h>
 
 #include <mfapi.h>
+
+#include "Helpers.hpp"
 
 //To Do:
 
@@ -53,53 +56,61 @@ int main()
 	return 0;
 }
 
+bool terminateTest = false; //semiphor for uninitializing COM
+
+//modified code from https://github.com/microsoft/Windows-classic-samples/tree/main/Samples/ApplicationLoopback
 class TestCallback : public IActivateAudioInterfaceCompletionHandler
 {
 public:
     HRESULT __stdcall ActivateCompleted(IActivateAudioInterfaceAsyncOperation* operation)
-    { 
+    {
+        ErrorHandler err;
+
         // Check for a successful activation result
         HRESULT hrActivateResult = E_UNEXPECTED;
         IUnknown* punkAudioInterface;
-        operation->GetActivateResult(&hrActivateResult, &punkAudioInterface);
 
-        punkAudioInterface.copy_to(&m_AudioClient); //convert to Audio Output
+        err = operation->GetActivateResult(&hrActivateResult, &punkAudioInterface);
 
+        IAudioClient* m_AudioClient;
+        err = punkAudioInterface->QueryInterface<IAudioClient>(&m_AudioClient); //convert to Audio Output
+        if (punkAudioInterface != NULL) { punkAudioInterface->Release(); punkAudioInterface = NULL; }
+
+        WAVEFORMATEX m_CaptureFormat{};
         m_CaptureFormat.wFormatTag = WAVE_FORMAT_PCM; //set output format
         m_CaptureFormat.nChannels = 2;
         m_CaptureFormat.nSamplesPerSec = 44100;
         m_CaptureFormat.wBitsPerSample = 16;
-        m_CaptureFormat.nBlockAlign = m_CaptureFormat.nChannels * m_CaptureFormat.wBitsPerSample / BITS_PER_BYTE;
+        m_CaptureFormat.nBlockAlign = m_CaptureFormat.nChannels * m_CaptureFormat.wBitsPerSample / 8;
         m_CaptureFormat.nAvgBytesPerSec = m_CaptureFormat.nSamplesPerSec * m_CaptureFormat.nBlockAlign;
 
         // Initialize the AudioClient in Shared Mode with the user specified buffer
-        m_AudioClient->Initialize(AUDCLNT_SHAREMODE_SHARED,
-            AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-            200000,
-            AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
-            &m_CaptureFormat,
-            nullptr));
+        err = m_AudioClient->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK, 200000, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, &m_CaptureFormat, nullptr);
+
+        errrr //To Do: finish uncommenting next code
+            //figure out what's next, probs not render a wav, just see if we can output audio back to another audio endpoint, perhaps with delay. Also can test latency this way
 
         // Get the maximum size of the AudioClient Buffer
-        RETURN_IF_FAILED(m_AudioClient->GetBufferSize(&m_BufferFrames));
+       // RETURN_IF_FAILED(m_AudioClient->GetBufferSize(&m_BufferFrames));
 
         // Get the capture client
-        RETURN_IF_FAILED(m_AudioClient->GetService(IID_PPV_ARGS(&m_AudioCaptureClient)));
+        //RETURN_IF_FAILED(m_AudioClient->GetService(IID_PPV_ARGS(&m_AudioCaptureClient)));
 
         // Create Async callback for sample events
-        RETURN_IF_FAILED(MFCreateAsyncResult(nullptr, &m_xSampleReady, nullptr, &m_SampleReadyAsyncResult));
+        //RETURN_IF_FAILED(MFCreateAsyncResult(nullptr, &m_xSampleReady, nullptr, &m_SampleReadyAsyncResult));
 
         // Tell the system which event handle it should signal when an audio buffer is ready to be processed by the client
-        RETURN_IF_FAILED(m_AudioClient->SetEventHandle(m_SampleReadyEvent.get()));
+        //RETURN_IF_FAILED(m_AudioClient->SetEventHandle(m_SampleReadyEvent.get()));
 
         // Creates the WAV file.
-        RETURN_IF_FAILED(CreateWAVFile());
+        //RETURN_IF_FAILED(CreateWAVFile());
 
         // Everything is ready.
-        m_DeviceState = DeviceState::Initialized;
-
+        //m_DeviceState = DeviceState::Initialized;
+        
+        if (m_AudioClient != NULL) { m_AudioClient->Release(); m_AudioClient = NULL; }
+        terminateTest = true;
         return S_OK;
-        return S_OK; 
     }
     
     //could use RunTimeClass<> inheritance to automatically define IUnknown functions, but not using it for simplicity
@@ -153,20 +164,22 @@ void WindowsTest()
     const IID IID_IMMDeviceEnumerator = __uuidof(IMMDeviceEnumerator);
     const IID IID_IAudioClient = __uuidof(IAudioClient);
 
+    ErrorHandler err;
+
     //for testing purposes just doing COM stuff here
-    CoInitializeEx(0,COINIT::COINIT_APARTMENTTHREADED);
+    err = CoInitializeEx(0,COINIT::COINIT_APARTMENTTHREADED);
 
     //create a device enumerator object
-    CoCreateInstance(CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL, IID_IMMDeviceEnumerator,(void**)&pEnumerator);
+    err = CoCreateInstance(CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL, IID_IMMDeviceEnumerator,(void**)&pEnumerator);
 
-    pEnumerator->GetDefaultAudioEndpoint(eRender, eConsole, &pDevice);
-    pDevice->Activate(IID_IAudioClient, CLSCTX_ALL,NULL, (void**)&pAudioClient);
+    err = pEnumerator->GetDefaultAudioEndpoint(eRender, eConsole, &pDevice);
+    err = pDevice->Activate(IID_IAudioClient, CLSCTX_ALL,NULL, (void**)&pAudioClient);
 
     //setting up parameters for ActivateAudioInterfaceAsync call
     AUDIOCLIENT_ACTIVATION_PARAMS audioclientActivationParams = {};
     audioclientActivationParams.ActivationType = AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK;
     audioclientActivationParams.ProcessLoopbackParams.ProcessLoopbackMode = PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE;
-    audioclientActivationParams.ProcessLoopbackParams.TargetProcessId = 0;// processId;
+    audioclientActivationParams.ProcessLoopbackParams.TargetProcessId = 35180;// processId;
 
     PROPVARIANT activateParams = {};
     activateParams.vt = VT_BLOB;
@@ -178,8 +191,10 @@ void WindowsTest()
 
     //see TestCallback definitions
     TestCallback aTest;
-    ActivateAudioInterfaceAsync(VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, __uuidof(IAudioClient), &activateParams, &aTest, &asyncOp);
+    err = ActivateAudioInterfaceAsync(VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, __uuidof(IAudioClient), &activateParams, &aTest, &asyncOp);
 
+    while (terminateTest == false)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
     //Wait for Async thread to have run before continuing
     
     if (pEnumerator != NULL) { pEnumerator->Release(); pEnumerator = NULL; }
@@ -187,7 +202,6 @@ void WindowsTest()
     if (pAudioClient != NULL) { pAudioClient->Release(); pAudioClient = NULL; }
     CoUninitialize();
 
-
-    std::cout << "gurt: yo\n";
+    std::cout << "end test\n";
     //HRESULT err = ActivateAudioInterfaceAsync();
 }
