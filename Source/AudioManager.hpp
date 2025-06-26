@@ -5,6 +5,9 @@
 #include <wil/resource.h>
 #include <wil/com.h>
 
+#include <Audioclient.h>
+#include <audioclientactivationparams.h>
+
 //To Do:
 
 //Separate class to handle sfml window management and draw calls
@@ -18,8 +21,17 @@ class AudioManager
 {
 public:
 	wil::unique_event gotLoopback;
+	wil::com_ptr<IAudioCaptureClient> m_AudioCaptureClient;
+	wil::com_ptr<IAudioClient> captureClientDevice;
+
+	IMFAsyncCallback* gotAudioFunction;
+	IMFAsyncResult* gotAudioAsyncID;
+
+	HANDLE gotAudioEvent;
 
 	AudioManager();
 	~AudioManager();
 
+	void QueueLoopback();
+	void HandleAudioPacket();
 };

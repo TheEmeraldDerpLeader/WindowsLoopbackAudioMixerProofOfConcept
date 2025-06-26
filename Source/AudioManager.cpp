@@ -19,6 +19,11 @@ bool terminateTest = false; //semiphor for uninitializing COM
 class TestCallback : public IActivateAudioInterfaceCompletionHandler
 {
 public:
+    AudioManager& caller;
+
+    TestCallback() = delete;
+    TestCallback(AudioManager& callerRef) : caller(callerRef) {}
+
     HRESULT __stdcall ActivateCompleted(IActivateAudioInterfaceAsyncOperation* operation)
     {
         ErrorHandler err;
@@ -48,19 +53,13 @@ public:
         //also check if all of this can be done without async, maybe IMMDeviceEnumerator contains the process loopback device, this way we don't have to mess with virtual audio device string
 
         UINT32 m_BufferFrames = 0;
-        wil::com_ptr<IAudioCaptureClient> m_AudioCaptureClient;
 
         // Get the maximum size of the AudioClient Buffer
         err = m_AudioClient->GetBufferSize(&m_BufferFrames);
 
         // Get the capture client
-        err = m_AudioClient->GetService(__uuidof(IAudioCaptureClient), (void**)&m_AudioCaptureClient);
-
-        HANDLE gotAudioEvent = CreateEventA(NULL, false, false, NULL);
-        // Tell the system which event handle it should signal when an audio buffer is ready to be processed by the client
-        err = m_AudioClient->SetEventHandle(gotAudioEvent);
-
-        //To Do: use mfapi to use MediaFoundation work queues to handle the got audio event
+        err = m_AudioClient->GetService(__uuidof(IAudioCaptureClient), (void**)&(caller.m_AudioCaptureClient));
+        caller.captureClientDevice = m_AudioClient;
 
         terminateTest = true;
         return S_OK;
@@ -69,6 +68,36 @@ public:
     //could use RunTimeClass<> inheritance to automatically define IUnknown functions, but not using it for simplicity
     ULONG __stdcall AddRef() { return S_OK; }
     ULONG __stdcall Release() { return S_OK; }
+    template<typename Q> 
+    HRESULT __stdcall QueryInterface(Q** pp) { pp = nullptr; return S_OK; }
+    HRESULT __stdcall QueryInterface(const IID& riid, void** ppvObject) { ppvObject = nullptr;  return S_OK; }
+};
+
+class AudioManagerASyncCallback : public IMFAsyncCallback
+{
+public:
+    AudioManager* caller;
+
+    AudioManagerASyncCallback() = delete;
+    AudioManagerASyncCallback(AudioManager* callerPtr) : caller(callerPtr) {}
+
+    HRESULT __stdcall GetParameters(DWORD* pdwFlags, DWORD* pdwQueue) override
+    {
+        *pdwFlags = 0;
+        *pdwQueue = MFASYNC_CALLBACK_QUEUE_STANDARD;
+        return S_OK;
+    }
+    HRESULT __stdcall Invoke(IMFAsyncResult* pAsyncResult) override
+    {
+        caller->HandleAudioPacket();
+        return S_OK;
+    }
+
+    //manual memory management
+    ULONG __stdcall AddRef() { return S_OK; }
+    ULONG __stdcall Release() { return S_OK; }
+
+    //not gonna need to traverse inheritance tree
     template<typename Q> 
     HRESULT __stdcall QueryInterface(Q** pp) { pp = nullptr; return S_OK; }
     HRESULT __stdcall QueryInterface(const IID& riid, void** ppvObject) { ppvObject = nullptr;  return S_OK; }
@@ -123,7 +152,7 @@ AudioManager::AudioManager()
     err = CoCreateInstance(CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL, IID_IMMDeviceEnumerator,(void**)&pEnumerator);
 
     IMMDeviceCollection* devices;
-    pEnumerator->EnumAudioEndpoints(eAll, DEVICE_STATE_ACTIVE | DEVICE_STATE_DISABLED, &devices);
+    pEnumerator->EnumAudioEndpoints(eAll, DEVICE_STATE_ACTIVE | DEVICE_STATE_DISABLED | DEVICE_STATE_NOTPRESENT | DEVICE_STATE_UNPLUGGED, &devices);
     UINT countUINT;
     devices->GetCount(&countUINT);
     for (int i = 0; i < countUINT; i++)
@@ -150,7 +179,7 @@ AudioManager::AudioManager()
     AUDIOCLIENT_ACTIVATION_PARAMS audioclientActivationParams = {};
     audioclientActivationParams.ActivationType = AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK;
     audioclientActivationParams.ProcessLoopbackParams.ProcessLoopbackMode = PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE;
-    audioclientActivationParams.ProcessLoopbackParams.TargetProcessId = 35180;// processId;
+    audioclientActivationParams.ProcessLoopbackParams.TargetProcessId = 4068;// processId;
 
     PROPVARIANT activateParams = {};
     activateParams.vt = VT_BLOB;
@@ -161,12 +190,21 @@ AudioManager::AudioManager()
     IActivateAudioInterfaceAsyncOperation* asyncOp;
 
     //see TestCallback definitions
-    TestCallback aTest;
+    TestCallback aTest(*this);
     err = ActivateAudioInterfaceAsync(VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, __uuidof(IAudioClient), &activateParams, &aTest, &asyncOp);
 
+    //Wait for Async thread to have run before continuing
     while (terminateTest == false)
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    //Wait for Async thread to have run before continuing
+    
+    // Tell the system which event handle it should signal when an audio buffer is ready to be processed by the client
+    gotAudioEvent = CreateEventA(NULL, false, false, NULL);
+    err = captureClientDevice->SetEventHandle(gotAudioEvent);
+    gotAudioFunction = new AudioManagerASyncCallback(this);
+    err = MFCreateAsyncResult(NULL, gotAudioFunction, NULL, &gotAudioAsyncID);
+    QueueLoopback();
+
+    captureClientDevice->Start();
 
     std::cout << "end test\n";
     //HRESULT err = ActivateAudioInterfaceAsync();
@@ -174,5 +212,34 @@ AudioManager::AudioManager()
 
 AudioManager::~AudioManager()
 {
-    
+    //cancel work item
+    if (gotAudioFunction != nullptr)
+        delete gotAudioFunction;
+
+    if (gotAudioEvent != NULL)
+        CloseHandle(gotAudioEvent);
+}
+
+void AudioManager::QueueLoopback()
+{
+    ErrorHandler err;
+
+    ResetEvent(gotAudioEvent);
+    err = MFPutWaitingWorkItem(gotAudioEvent, 0, gotAudioAsyncID, NULL);
+}
+
+void AudioManager::HandleAudioPacket()
+{
+    ErrorHandler err;
+
+    //std::cout << "Handle packet\n";
+    QueueLoopback();
+    BYTE* data;
+    UINT32 numFrames;
+    DWORD flags;
+    UINT64 start;
+    UINT64 end;
+    err = m_AudioCaptureClient->GetBuffer(&data, &numFrames, &flags, &start, &end);
+    std::cout << "Packet size = " << numFrames << '\n';
+    er //todo: check that this is actually reading audio, have a way for the callback to not run if AudioManager is destructed + callback destructs itself? 
 }
