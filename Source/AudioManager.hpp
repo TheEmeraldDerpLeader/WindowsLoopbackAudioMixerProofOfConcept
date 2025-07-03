@@ -24,10 +24,15 @@ public:
 	wil::com_ptr<IAudioCaptureClient> m_AudioCaptureClient;
 	wil::com_ptr<IAudioClient> captureClientDevice;
 
+	wil::com_ptr<IAudioClient> pAudioClient;
+	wil::com_ptr<IAudioRenderClient> defaultRenderClient;
+
 	IMFAsyncCallback* gotAudioFunction;
 	IMFAsyncResult* gotAudioAsyncID;
 
 	HANDLE gotAudioEvent;
+
+	WAVEFORMATEX* format;
 
 	AudioManager();
 	~AudioManager();

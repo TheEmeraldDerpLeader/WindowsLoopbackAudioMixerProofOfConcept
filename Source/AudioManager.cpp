@@ -38,16 +38,17 @@ public:
         err = punkAudioInterface->QueryInterface<IAudioClient>(&m_AudioClient); //convert to Audio Output
         if (punkAudioInterface != NULL) { punkAudioInterface->Release(); punkAudioInterface = NULL; }
 
-        WAVEFORMATEX m_CaptureFormat{};
+        /*WAVEFORMATEX m_CaptureFormat{};
         m_CaptureFormat.wFormatTag = WAVE_FORMAT_PCM; //set output format
         m_CaptureFormat.nChannels = 2;
         m_CaptureFormat.nSamplesPerSec = 44100;
-        m_CaptureFormat.wBitsPerSample = 16;
+        m_CaptureFormat.wBitsPerSample = 32;
         m_CaptureFormat.nBlockAlign = m_CaptureFormat.nChannels * m_CaptureFormat.wBitsPerSample / 8;
-        m_CaptureFormat.nAvgBytesPerSec = m_CaptureFormat.nSamplesPerSec * m_CaptureFormat.nBlockAlign;
+        m_CaptureFormat.nAvgBytesPerSec = m_CaptureFormat.nSamplesPerSec * m_CaptureFormat.nBlockAlign;*/
 
         // Initialize the AudioClient in Shared Mode with the user specified buffer
-        err = m_AudioClient->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK, 200000, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, &m_CaptureFormat, nullptr);
+        //err = m_AudioClient->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK, 200000, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, &m_CaptureFormat, nullptr);
+        err = m_AudioClient->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK, 200000, 0, caller.format, nullptr);
 
         //figure out what's next, probs not render a wav, just see if we can output audio back to another audio endpoint, perhaps with delay. Also can test latency this way
         //also check if all of this can be done without async, maybe IMMDeviceEnumerator contains the process loopback device, this way we don't have to mess with virtual audio device string
@@ -139,7 +140,6 @@ AudioManager::AudioManager()
     HRESULT hr;
     wil::com_ptr<IMMDeviceEnumerator> pEnumerator;
     wil::com_ptr<IMMDevice> pDevice;
-    wil::com_ptr<IAudioClient> pAudioClient;
     int count = 0;
 
     const CLSID CLSID_MMDeviceEnumerator = __uuidof(MMDeviceEnumerator);
@@ -171,15 +171,33 @@ AudioManager::AudioManager()
 
     if (devices != NULL) { devices->Release(); devices = NULL; }
 
+    //setup render client
     err = pEnumerator->GetDefaultAudioEndpoint(eRender, eConsole, &pDevice);
     err = pDevice->Activate(IID_IAudioClient, CLSCTX_ALL,NULL, (void**)&pAudioClient);
+    pAudioClient->GetMixFormat(&format);
+    err = pAudioClient->Initialize(AUDCLNT_SHAREMODE_SHARED, 0, 200000, 0, format, nullptr);
+    err = pAudioClient->GetService(__uuidof(IAudioRenderClient), (void**)&defaultRenderClient);
 
+    
+
+    //rewrite to output
+    BYTE* dataWrite = nullptr;
+    UINT32 bufSize = 0;
+    pAudioClient->GetBufferSize(&bufSize);
+    err = defaultRenderClient->GetBuffer(bufSize, &dataWrite);
+    if (err.err == S_OK)
+    {
+        for (int i = 0; i < bufSize*2*4; i++)
+            dataWrite[i] = 0;
+    }
+    err = defaultRenderClient->ReleaseBuffer(bufSize,0);
+    pAudioClient->Start();
 
     //setting up parameters for ActivateAudioInterfaceAsync call
     AUDIOCLIENT_ACTIVATION_PARAMS audioclientActivationParams = {};
     audioclientActivationParams.ActivationType = AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK;
     audioclientActivationParams.ProcessLoopbackParams.ProcessLoopbackMode = PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE;
-    audioclientActivationParams.ProcessLoopbackParams.TargetProcessId = 4068;// processId;
+    audioclientActivationParams.ProcessLoopbackParams.TargetProcessId = 26156;// processId;
 
     PROPVARIANT activateParams = {};
     activateParams.vt = VT_BLOB;
@@ -240,6 +258,44 @@ void AudioManager::HandleAudioPacket()
     UINT64 start;
     UINT64 end;
     err = m_AudioCaptureClient->GetBuffer(&data, &numFrames, &flags, &start, &end);
-    std::cout << "Packet size = " << numFrames << '\n';
-    er //todo: check that this is actually reading audio, have a way for the callback to not run if AudioManager is destructed + callback destructs itself? 
+    //std::cout << "Packet size = " << numFrames << '\n';
+    float avgMag = 0;
+    for (int i = 0; i < numFrames*format->nChannels; i++)
+    {
+        //16 bit samples
+        //short* dataS = reinterpret_cast<short*>(data);
+        //float val = dataS[i];
+        
+        //default mix sample
+        float* dataF = reinterpret_cast<float*>(data);
+        float val = dataF[i];
+
+        //if (val > avgMag) avgMag = val;
+        if (val < 0) val *= -1;
+        avgMag += val;
+    }
+    avgMag /= (numFrames*format->nChannels);
+
+    static int ignoreOut = 0;
+    if (ignoreOut == 0)
+        std::cout << "avg mag: " << avgMag << '\n';
+    ignoreOut++; ignoreOut %= 6;
+    
+    //rewrite to output
+    float* dataWrite = nullptr;
+    err = defaultRenderClient->GetBuffer(numFrames, reinterpret_cast<BYTE**>(&dataWrite));
+    if (err.err == S_OK)
+    {
+        for (int i = 0; i < numFrames*format->nChannels; i++)
+            /*if (ignoreOut%2 == 0)
+                dataWrite[i] = 0;
+            else
+                dataWrite[i] = -0;*/
+            dataWrite[i] = reinterpret_cast<float*>(data)[i];
+    }
+
+    err = m_AudioCaptureClient->ReleaseBuffer(numFrames);
+    err = defaultRenderClient->ReleaseBuffer(numFrames,0);
+
+    //todo: check that this is actually reading audio, have a way for the callback to not run if AudioManager is destructed + callback destructs itself? 
 }
