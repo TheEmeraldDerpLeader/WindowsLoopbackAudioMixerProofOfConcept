@@ -6,6 +6,7 @@
 #include <Functiondiscoverykeys_devpkey.h>
 #include <Audioclient.h>
 #include <audioclientactivationparams.h>
+#include <audiopolicy.h>
 
 #include <Helpers.hpp>
 
@@ -187,7 +188,7 @@ AudioManager::AudioManager()
     err = defaultRenderClient->GetBuffer(bufSize, &dataWrite);
     if (err.err == S_OK)
     {
-        for (int i = 0; i < bufSize*2*4; i++)
+        for (int i = 0; i < bufSize*4*format->nChannels; i++)
             dataWrite[i] = 0;
     }
     err = defaultRenderClient->ReleaseBuffer(bufSize,0);
@@ -197,7 +198,7 @@ AudioManager::AudioManager()
     AUDIOCLIENT_ACTIVATION_PARAMS audioclientActivationParams = {};
     audioclientActivationParams.ActivationType = AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK;
     audioclientActivationParams.ProcessLoopbackParams.ProcessLoopbackMode = PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE;
-    audioclientActivationParams.ProcessLoopbackParams.TargetProcessId = 26156;// processId;
+    audioclientActivationParams.ProcessLoopbackParams.TargetProcessId = 8832;// processId;
 
     PROPVARIANT activateParams = {};
     activateParams.vt = VT_BLOB;
@@ -224,6 +225,8 @@ AudioManager::AudioManager()
 
     captureClientDevice->Start();
 
+    SessionEnumerationTest();
+
     std::cout << "end test\n";
     //HRESULT err = ActivateAudioInterfaceAsync();
 }
@@ -236,6 +239,37 @@ AudioManager::~AudioManager()
 
     if (gotAudioEvent != NULL)
         CloseHandle(gotAudioEvent);
+}
+
+void AudioManager::SessionEnumerationTest()
+{
+    ErrorHandler err;
+    std::cout << "\nSessionEnumerationTest:\n";
+    
+    //get default device
+    wil::com_ptr<IMMDeviceEnumerator> pEnumerator;
+    err = CoCreateInstance(__uuidof(MMDeviceEnumerator), NULL, CLSCTX_ALL, __uuidof(IMMDeviceEnumerator),(void**)&pEnumerator);
+    wil::com_ptr<IMMDevice> pDevice;
+    err = pEnumerator->GetDefaultAudioEndpoint(eRender, eConsole, &pDevice);
+
+    //get session manager and enumerator
+    wil::com_ptr<IAudioSessionManager2> sessionMan;
+    err = pDevice->Activate(__uuidof(IAudioSessionManager2), CLSCTX_ALL, NULL, (void**)(&sessionMan));
+    wil::com_ptr<IAudioSessionEnumerator> sessionEnum;
+    err = sessionMan->GetSessionEnumerator(&sessionEnum);
+    int sessionCount;
+    err = sessionEnum->GetCount(&sessionCount);
+    std::cout << "Session Count: " << sessionCount << '\n';
+    for (int i = 0; i < sessionCount; i++)
+    {
+        wil::com_ptr<IAudioSessionControl> session;
+        err = sessionEnum->GetSession(i, &session);
+        wil::unique_cotaskmem_string name; //bruh
+        session->GetIconPath(&name); todo //get name/icon path doesn't work, maybe find way to get process ID and use that to get the name
+        std::wcout << "Session " << i << ": " << name.get() << '\n';
+    }
+
+    std::cout << '\n';
 }
 
 void AudioManager::QueueLoopback()
@@ -257,45 +291,50 @@ void AudioManager::HandleAudioPacket()
     DWORD flags;
     UINT64 start;
     UINT64 end;
-    err = m_AudioCaptureClient->GetBuffer(&data, &numFrames, &flags, &start, &end);
-    //std::cout << "Packet size = " << numFrames << '\n';
-    float avgMag = 0;
-    for (int i = 0; i < numFrames*format->nChannels; i++)
-    {
-        //16 bit samples
-        //short* dataS = reinterpret_cast<short*>(data);
-        //float val = dataS[i];
-        
-        //default mix sample
-        float* dataF = reinterpret_cast<float*>(data);
-        float val = dataF[i];
+    err = m_AudioCaptureClient->GetBuffer(&data, &numFrames, &flags, nullptr, &start);
+    //std::cout << start << '\n';
 
-        //if (val > avgMag) avgMag = val;
-        if (val < 0) val *= -1;
-        avgMag += val;
-    }
-    avgMag /= (numFrames*format->nChannels);
-
-    static int ignoreOut = 0;
-    if (ignoreOut == 0)
-        std::cout << "avg mag: " << avgMag << '\n';
-    ignoreOut++; ignoreOut %= 6;
-    
     //rewrite to output
     float* dataWrite = nullptr;
     err = defaultRenderClient->GetBuffer(numFrames, reinterpret_cast<BYTE**>(&dataWrite));
     if (err.err == S_OK)
     {
-        for (int i = 0; i < numFrames*format->nChannels; i++)
-            /*if (ignoreOut%2 == 0)
-                dataWrite[i] = 0;
-            else
-                dataWrite[i] = -0;*/
+        for (int i = 0; i < numFrames*format->nChannels; i++)           
             dataWrite[i] = reinterpret_cast<float*>(data)[i];
     }
 
     err = m_AudioCaptureClient->ReleaseBuffer(numFrames);
     err = defaultRenderClient->ReleaseBuffer(numFrames,0);
+    
+    //if behind, clear output and get caught up
+    err = m_AudioCaptureClient->GetNextPacketSize(&numFrames);
+    if (numFrames != 0 && err.err == S_OK)
+    {
+        std::cout << "reset\n";
+        err = m_AudioCaptureClient->GetBuffer(&data, &numFrames, &flags, nullptr, &start);
+
+        //rewrite to output
+        float* dataWrite = nullptr;
+        err = defaultRenderClient->GetBuffer(numFrames, reinterpret_cast<BYTE**>(&dataWrite));
+        if (err.err == S_OK)
+        {
+            pAudioClient->Stop();
+            pAudioClient->Reset();
+            pAudioClient->Start();
+
+            /*UINT32 bufSize = 0;
+            pAudioClient->GetBufferSize(&bufSize);
+            err = defaultRenderClient->GetBuffer(bufSize, &dataWrite);
+            for (int i = 0; i < bufSize*4*format->nChannels; i++)
+                dataWrite[i] = 0;*/
+            while (numFrames != 0 && err.err == S_OK)
+            {
+                err = m_AudioCaptureClient->GetBuffer(&data, &numFrames, &flags, nullptr, &start);
+                err = m_AudioCaptureClient->ReleaseBuffer(numFrames);
+                err = m_AudioCaptureClient->GetNextPacketSize(&numFrames);
+            }
+        }
+    }
 
     //todo: check that this is actually reading audio, have a way for the callback to not run if AudioManager is destructed + callback destructs itself? 
 }

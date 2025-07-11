@@ -37,6 +37,8 @@ public:
 	AudioManager();
 	~AudioManager();
 
+	void SessionEnumerationTest();
+
 	void QueueLoopback();
 	void HandleAudioPacket();
 };

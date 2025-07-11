@@ -39,7 +39,7 @@ int main2()
 
 int main()
 {
-    CoInitializeEx(0,COINIT::COINIT_APARTMENTTHREADED);
+    CoInitializeEx(0,COINIT::COINIT_MULTITHREADED);
     MFStartup(MF_VERSION);
 
     int out = main2();
