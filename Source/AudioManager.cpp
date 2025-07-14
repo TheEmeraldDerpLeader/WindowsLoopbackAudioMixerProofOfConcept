@@ -13,6 +13,7 @@
 #include <iostream>
 #include <string>
 #include <thread>
+#include <vector>
 
 bool terminateTest = false; //semiphor for uninitializing COM
 
@@ -263,10 +264,19 @@ void AudioManager::SessionEnumerationTest()
     for (int i = 0; i < sessionCount; i++)
     {
         wil::com_ptr<IAudioSessionControl> session;
+        wil::com_ptr<IAudioSessionControl2> sessionFull;
         err = sessionEnum->GetSession(i, &session);
-        wil::unique_cotaskmem_string name; //bruh
-        session->GetIconPath(&name); todo //get name/icon path doesn't work, maybe find way to get process ID and use that to get the name
-        std::wcout << "Session " << i << ": " << name.get() << '\n';
+        err = session->QueryInterface<IAudioSessionControl2>(&sessionFull);
+        if (err.err == S_OK)
+        {
+            //wil::unique_cotaskmem_string name; //bruh
+            //sessionFull->GetSessionInstanceIdentifier(&name);
+            DWORD processID;
+            sessionFull->GetProcessId(&processID);
+            std::wstring name;
+            if (NameFromProcessID(processID, name) == S_OK)
+                std::wcout << "Session " << i << ": " << name << '\n';
+        }
     }
 
     std::cout << '\n';
@@ -337,4 +347,40 @@ void AudioManager::HandleAudioPacket()
     }
 
     //todo: check that this is actually reading audio, have a way for the callback to not run if AudioManager is destructed + callback destructs itself? 
+}
+
+int AudioManager::NameFromProcessID(DWORD pid, std::wstring& strOut)
+{
+    wil::unique_handle process(OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, pid));
+    if (process == NULL)
+    {
+        strOut = L"Error: Invalid Process ID";
+        return -1;
+    }
+    static int largestPath = 128; //largest path name ever recorded when this function has run
+    std::vector<wchar_t> processName; processName.resize(largestPath);
+    DWORD nameSize = 0;
+    while (true)
+    {
+        nameSize = GetProcessImageFileNameW(process.get(), processName.data(), processName.size());
+        if (nameSize == processName.size()) //recorded name took up entire name buffer, name might be longer
+            processName.resize(nameSize*2);
+        else //recorded name is fully within buffer
+            break;
+    }
+    largestPath = processName.size();
+    processName.resize(nameSize);
+    std::wstring& out = strOut; out.clear();
+    //just get executable name
+    int index = 0;
+    for (int i = nameSize-1; i >= 0; i--)
+        if (processName[i] == '\\')
+        {
+            index = i+1;
+            break;
+        }
+    for (int i = index; i < nameSize; i++)
+        out.push_back(processName[i]);
+
+    return S_OK;
 }

@@ -41,4 +41,6 @@ public:
 
 	void QueueLoopback();
 	void HandleAudioPacket();
+
+	int NameFromProcessID(DWORD pid, std::wstring& strOut);
 };
