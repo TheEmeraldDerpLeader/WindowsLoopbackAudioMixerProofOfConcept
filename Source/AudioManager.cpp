@@ -108,6 +108,8 @@ public:
 
 AudioManager::AudioManager()
 {
+    return;
+
     //basic Windows API test
     DWORD processes[2048];
     DWORD retSize;
@@ -345,11 +347,9 @@ void AudioManager::HandleAudioPacket()
             }
         }
     }
-
-    //todo: check that this is actually reading audio, have a way for the callback to not run if AudioManager is destructed + callback destructs itself? 
 }
 
-int AudioManager::NameFromProcessID(DWORD pid, std::wstring& strOut)
+int NameFromProcessID(DWORD pid, std::wstring& strOut)
 {
     wil::unique_handle process(OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, pid));
     if (process == NULL)
@@ -383,4 +383,78 @@ int AudioManager::NameFromProcessID(DWORD pid, std::wstring& strOut)
         out.push_back(processName[i]);
 
     return S_OK;
+}
+
+void GetAllAudioSessionSources(std::vector<CaptureSource>& sources)
+{
+    sources.clear();
+
+    ErrorHandler err;
+
+    //get default device
+    wil::com_ptr<IMMDeviceEnumerator> pEnumerator;
+    err = CoCreateInstance(__uuidof(MMDeviceEnumerator), NULL, CLSCTX_ALL, __uuidof(IMMDeviceEnumerator),(void**)&pEnumerator);
+    wil::com_ptr<IMMDevice> pDevice;
+    //err = pEnumerator->GetDefaultAudioEndpoint(eRender, eConsole, &pDevice);
+    
+    //iterate through all active audio devices
+    IMMDeviceCollection* devices;
+    err = pEnumerator->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &devices);
+    UINT countUINT;
+    devices->GetCount(&countUINT);
+    for (int i = 0; i < countUINT; i++)
+    {
+        /* test code to get device name
+        IMMDevice* testDevice;
+        devices->Item(i, &testDevice);
+        IPropertyStore* props;
+        testDevice->OpenPropertyStore(STGM_READ, &props);
+        PROPVARIANT val;
+        props->GetValue(PKEY_Device_FriendlyName, &val);
+        std::wcout << val.pwszVal << '\n';
+        if (props != NULL) { props->Release(); props = NULL; }
+        if (testDevice != NULL) { testDevice->Release(); testDevice = NULL; }*/
+
+        //get device
+        err = devices->Item(i, &pDevice);
+        if (err.err != S_OK)
+            continue;
+
+        //get that audio session's device name and ID
+        wil::com_ptr<IPropertyStore> props;
+        pDevice->OpenPropertyStore(STGM_READ, &props);
+        wil::unique_prop_variant val;
+        props->GetValue(PKEY_Device_FriendlyName, &val);
+        wil::unique_cotaskmem_string deviceIDPtr;
+        pDevice->GetId(&deviceIDPtr);
+        std::wstring deviceName = val.pwszVal;
+        std::wstring deviceID = deviceIDPtr.get();
+
+        //get session manager and enumerator
+        wil::com_ptr<IAudioSessionManager2> sessionMan;
+        err = pDevice->Activate(__uuidof(IAudioSessionManager2), CLSCTX_ALL, NULL, (void**)(&sessionMan));
+        wil::com_ptr<IAudioSessionEnumerator> sessionEnum;
+        err = sessionMan->GetSessionEnumerator(&sessionEnum);
+        int sessionCount;
+        err = sessionEnum->GetCount(&sessionCount);
+
+        for (int i = 0; i < sessionCount; i++)
+        {
+            wil::com_ptr<IAudioSessionControl> session;
+            wil::com_ptr<IAudioSessionControl2> sessionFull;
+            err = sessionEnum->GetSession(i, &session);
+            err = session->QueryInterface<IAudioSessionControl2>(&sessionFull);
+            if (err.err == S_OK)
+            {
+                //wil::unique_cotaskmem_string name; //bruh
+                //sessionFull->GetSessionInstanceIdentifier(&name);
+                DWORD processID;
+                sessionFull->GetProcessId(&processID);
+                std::wstring name;
+                if (NameFromProcessID(processID, name) == S_OK)
+                    sources.push_back(CaptureSource(name, processID, deviceID, deviceName));
+
+            }
+        }
+    }
 }
