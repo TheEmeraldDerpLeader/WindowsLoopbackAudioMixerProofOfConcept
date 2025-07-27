@@ -113,7 +113,7 @@ HRESULT __stdcall AsyncCallbackSetup::ActivateCompleted(IActivateAudioInterfaceA
 
 CaptureSourceStream CaptureSource::GetStream()
 {
-    CaptureSourceStream out;
+    CaptureSourceStream out; out.source = *this;
     ErrorHandler err;
 
     //setting up parameters for ActivateAudioInterfaceAsync call
@@ -316,6 +316,8 @@ void CaptureSourceStream::HandleAudioPacket()
 
 CaptureSourceStream::CaptureSourceStream(CaptureSourceStream&& moveRef)
 {
+    source = std::move(moveRef.source);
+
     if (moveRef._accessCallback.ptr != nullptr)
         moveRef._accessCallback.Lock(); //lock callback before checking if it's nullptr
     if (moveRef._accessGotAudioFunction.ptr != nullptr)

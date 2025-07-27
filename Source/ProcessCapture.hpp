@@ -10,6 +10,8 @@
 #include <iostream>
 #include <mutex>
 
+class CaptureSourceStream;
+
 class RCMutex
 {
 public:
@@ -43,12 +45,30 @@ public:
 	bool TryLock() { return ptr->mut.try_lock(); }
 };
 
+class CaptureSource
+{
+public:
+	std::wstring processName;
+	DWORD processID = NULL;
+	std::wstring deviceID;
+	std::wstring deviceName;
+	//sessionID
+
+	CaptureSource() {}
+	CaptureSource(std::wstring processNameWString, DWORD processIDDWORD, std::wstring deviceIDWString, std::wstring deviceNameWString)
+		: processName(processNameWString), processID(processIDDWORD), deviceID(deviceIDWString), deviceName(deviceNameWString) {}
+
+	CaptureSourceStream GetStream();
+};
+
 //class allocated to wait for the windows callback, deletes itself once callback is recieved
 class __CaptureSourceStreamCallback;
 class __CaptureSourceStreamASyncCallback;
 class CaptureSourceStream
 {
 public:
+	CaptureSource source;
+
 	//if not nullptr, this object is currently waiting for callback and can't be copied
 	__CaptureSourceStreamCallback* _callback = nullptr;
 	RCMutexRef _accessCallback;
@@ -80,19 +100,4 @@ public:
 
 	void StartStream();
 	void HandleAudioPacket();
-};
-
-class CaptureSource
-{
-public:
-	std::wstring processName;
-	DWORD processID;
-	std::wstring deviceID;
-	std::wstring deviceName;
-	//sessionID
-
-	CaptureSource(std::wstring processNameWString, DWORD processIDDWORD, std::wstring deviceIDWString, std::wstring deviceNameWString)
-		: processName(processNameWString), processID(processIDDWORD), deviceID(deviceIDWString), deviceName(deviceNameWString) {}
-
-	CaptureSourceStream GetStream();
 };
