@@ -5,6 +5,7 @@
 #include <SFML/Audio.hpp>
 
 #include <AudioManager.hpp>
+#include <ProcessCapture.hpp>
 
 int main2()
 {
@@ -18,8 +19,22 @@ int main2()
         std::wcout << sources[i].deviceName << "  -  " << sources[i].processID << " : " << sources[i].processName << '\n';
 
     std::cout << "\n";
+    std::vector<CaptureSourceStream> streams;
+
+    int sourceNum;
+    std::cin >> sourceNum;
+    if (sourceNum > 0 && sourceNum < sources.size())
+    {
+        streams.push_back(sources[sourceNum].GetStream());
+    }
+    std::cin >> sourceNum;
+    if (sourceNum > 0 && sourceNum < sources.size())
+    {
+        streams.push_back(sources[sourceNum].GetStream());
+    }
 
     sf::RenderWindow window(sf::VideoMode({200, 200}), "SFML works!");
+    window.setFramerateLimit(60);
     sf::CircleShape shape(100.f);
     shape.setFillColor(sf::Color::Green);
 
@@ -40,7 +55,6 @@ int main2()
         window.draw(shape);
         window.display();
     }
-
 
 	return 0;
 }

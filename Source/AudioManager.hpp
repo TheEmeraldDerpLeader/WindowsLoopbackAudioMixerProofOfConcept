@@ -26,29 +26,8 @@ class AudioManager
 {
 public:
 
-	//necessary components for other things (like CaptureSourceStreams) to start audio loopback and audio output
-	wil::unique_event gotLoopback;
-	wil::com_ptr<IAudioCaptureClient> m_AudioCaptureClient;
-	wil::com_ptr<IAudioClient> captureClientDevice;
-
-	wil::com_ptr<IAudioClient> pAudioClient;
-	wil::com_ptr<IAudioRenderClient> defaultRenderClient;
-
-	IMFAsyncCallback* gotAudioFunction;
-	IMFAsyncResult* gotAudioAsyncID;
-
-	HANDLE gotAudioEvent;
-
-	WAVEFORMATEX* format;
-
 	AudioManager();
 	~AudioManager();
-
-	void SessionEnumerationTest();
-
-	void QueueLoopback();
-	void HandleAudioPacket();
-
 	
 };
 
