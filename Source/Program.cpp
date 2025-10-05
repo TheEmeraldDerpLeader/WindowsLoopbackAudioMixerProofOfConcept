@@ -7,6 +7,15 @@
 #include <AudioManager.hpp>
 #include <ProcessCapture.hpp>
 
+/*Todo:
+    Get volume magnitude of program
+    Use SimpleAudioVolume to control program volume
+        - keep track of audio session ID
+        - create a ISimpleAudioVolume from IAudioSessionManager
+    Keybind system to tie volume control to keybinds
+        - complex keybinds, e.g. ctrl shift up arrow, tap ctrl to lower volume tap shift to raise volume
+*/
+
 
 class CLInterface
 {
@@ -14,6 +23,9 @@ public:
     std::vector<CaptureSource> sources;
     std::vector<CaptureSourceStream> streams;
     AudioManager am;
+
+    int ctrlDev = -1; //for testing session specific control
+    int ctrlSes = -1;
 
     void CommandHelp()
     {
@@ -49,7 +61,7 @@ public:
 
         for (int i = 0; i < sources.size(); i++)
             //std::wcout << sources[i].deviceName << "  -  " << sources[i].processID << " : " << sources[i].processName << '\n';
-            std::wcout << i << " -- " << sources[i].processID << " : " << sources[i].processName << '\n';
+            std::wcout << i << " -- " << sources[i].sessionID << " : " << sources[i].processName << '\n';
     }
     void CommandStreams()
     {
@@ -88,6 +100,36 @@ public:
     {
         streams.clear();
     }
+    void CommandSetVolume(int device, int session, float v)
+    {
+        am.SetSessionVolume(device, session, v);
+        std::cout << "Volume: " << am.GetSessionVolume(device, session) << '\n';
+    }
+    void CommandFullPrint()
+    {
+        am.ResetSessions();
+
+        for (int i = 0; i < am.devices.size(); i++)
+        {
+            std::wcout << "Device: " << am.devices[i].deviceName << "\n";
+            for (int j = 0; j < am.sessions[i].size(); j++)
+            {
+                std::wcout << '\t' << am.sessions[i][j].name() << '\n';
+            }
+            std::cout << '\n';
+        }
+    }
+
+    void CommandTest()
+    {
+        std::cin >> ctrlDev;
+        std::cin >> ctrlSes;
+        float vol = 0;
+        std::cin >> vol;
+        am.SetSessionVolume(ctrlDev, ctrlSes, vol);
+
+        //am.SetAllSessionVolumes(ctrlDev, vol);
+    }
 
     std::string TryReadCommand()
     {
@@ -101,9 +143,15 @@ public:
 
         return command;
     }
-    int TryReadNum()
+    int TryReadInt()
     {
         int num = -1;
+        std::cin >> num;
+        return num;
+    }
+    float TryReadFloat()
+    {
+        float num = -1;
         std::cin >> num;
         return num;
     }
@@ -111,6 +159,18 @@ public:
 
 int main2()
 {
+
+    /*std::vector<int> LOL;
+    std::vector<int> LOL1;
+    for (int i = 0; i < 100000000; i++)
+    {
+        LOL.push_back(rand());
+        LOL1.push_back(rand());
+    }
+    for (int i = 0; i < 100000000; i++)
+        LOL1[i] = LOL[i]+LOL1[i];*/
+
+
     CLInterface cli;
 
     //initial message
@@ -133,12 +193,12 @@ int main2()
             cli.CommandStreams();
         if (command == "capture")
         {
-            int index = cli.TryReadNum();
+            int index = cli.TryReadInt();
             cli.CommandCapture(index);
         }
         if (command == "stop")
         {
-            int index = cli.TryReadNum();
+            int index = cli.TryReadInt();
             cli.CommandStop(index);
         }
         if (command == "exit")
@@ -146,6 +206,29 @@ int main2()
             cli.CommandExit();
             break;
         }
+        if (command == "setvolume")
+        {
+            int device = cli.TryReadInt();
+            int session = cli.TryReadInt();
+            float vol = cli.TryReadFloat();
+            cli.CommandSetVolume(device, session, vol);
+        }
+        if (command == "fullprint")
+        {
+            cli.CommandFullPrint();
+        }
+        if (command == "test")
+        {
+            cli.CommandTest();
+        }
+
+        if (command == "p")
+            cli.am.OffsetSessionVolume(cli.ctrlDev, cli.ctrlSes, 2);
+        
+        if (command == "l")
+            cli.am.OffsetSessionVolume(cli.ctrlDev, cli.ctrlSes, -2);
+
+
     }
 
     /*

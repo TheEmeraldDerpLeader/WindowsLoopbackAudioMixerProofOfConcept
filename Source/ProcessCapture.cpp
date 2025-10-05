@@ -1,7 +1,5 @@
 #include "ProcessCapture.hpp"
 
-#include "AudioManager.hpp"
-
 #include <Windows.h>
 #include <Psapi.h>
 #include <mmdeviceapi.h>
@@ -9,6 +7,7 @@
 #include <Audioclient.h>
 #include <audioclientactivationparams.h>
 #include <audiopolicy.h>
+#include <endpointvolume.h>
 
 #include <Helpers.hpp>
 
@@ -144,6 +143,95 @@ CaptureSourceStream CaptureSource::GetStream()
 	return std::move(out);
 }
 
+CaptureSourceControl CaptureSource::GetControl()
+{
+    ErrorHandler err;
+
+    //get default device
+    wil::com_ptr<IMMDeviceEnumerator> pEnumerator;
+    err = CoCreateInstance(__uuidof(MMDeviceEnumerator), NULL, CLSCTX_ALL, __uuidof(IMMDeviceEnumerator),(void**)&pEnumerator);
+    wil::com_ptr<IMMDevice> pDevice;
+    //err = pEnumerator->GetDefaultAudioEndpoint(eRender, eConsole, &pDevice);
+
+    IMMDeviceCollection* devices;
+    err = pEnumerator->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &devices);
+    UINT countUINT;
+    devices->GetCount(&countUINT);
+    
+    //find device corresponding to this CaptureSource's deviceID
+    int i = 0;
+    for (;i < countUINT; i++)
+    {
+        //get device
+        err = devices->Item(i, &pDevice);
+        if (err.err != S_OK)
+            continue;
+
+        //get that audio session's device name and ID
+        wil::unique_cotaskmem_string deviceIDPtr;
+        pDevice->GetId(&deviceIDPtr);
+        std::wstring deviceID = deviceIDPtr.get();
+
+        if (deviceID == this->deviceID)
+            break;
+
+    }
+
+    if (i == countUINT)
+        return CaptureSourceControl();
+    
+    err = devices->Item(i, &pDevice);
+
+
+    //get session manager and enumerator
+    wil::com_ptr<IAudioSessionManager2> sessionMan;
+    err = pDevice->Activate(__uuidof(IAudioSessionManager2), CLSCTX_ALL, NULL, (void**)(&sessionMan));
+    wil::com_ptr<IAudioSessionEnumerator> sessionEnum;
+    err = sessionMan->GetSessionEnumerator(&sessionEnum);
+    int sessionCount;
+    err = sessionEnum->GetCount(&sessionCount);
+    
+    i = 0;
+    for (; i < sessionCount; i++)
+    {
+        wil::com_ptr<IAudioSessionControl> session;
+        wil::com_ptr<IAudioSessionControl2> sessionFull;
+        err = sessionEnum->GetSession(i, &session);
+        err = session->QueryInterface<IAudioSessionControl2>(&sessionFull);
+        if (err.err == S_OK)
+        {
+            wil::unique_cotaskmem_string sessionIDPtr;
+            err = sessionFull->GetSessionInstanceIdentifier(&sessionIDPtr);
+            std::wstring sessionID = sessionIDPtr.get();
+
+            if (sessionID == this->sessionID)
+                break;
+        }
+    }
+
+    if (i == sessionCount)
+        return CaptureSourceControl();
+
+    wil::com_ptr<IAudioSessionControl> session;
+    wil::com_ptr<IAudioSessionControl2> sessionFull;
+    err = sessionEnum->GetSession(i, &session);
+    err = session->QueryInterface<IAudioSessionControl2>(&sessionFull);
+
+    wil::com_ptr<ISimpleAudioVolume> sessionVolume;
+    err = sessionFull->QueryInterface(&sessionVolume); //this isn't in the documentation :(
+
+    wil::com_ptr<IAudioMeterInformation> sessionMeter;
+    err = sessionFull->QueryInterface(&sessionMeter);
+    //sessionMan->GetSimpleAudioVolume();
+
+    CaptureSourceControl out;
+    out.source = *this;
+    out.session = std::move(sessionFull);
+    out.sessionVolume = std::move(sessionVolume);
+
+    return out;
+}
+
 CaptureSourceStream::CaptureSourceStream()
 {
     ErrorHandler err;
@@ -162,6 +250,37 @@ CaptureSourceStream::CaptureSourceStream()
         err = defaultAudioClient->Initialize(AUDCLNT_SHAREMODE_SHARED, 0, 200000, 0, reinterpret_cast<WAVEFORMATEX*>(format.get()), nullptr);
         err = defaultAudioClient->GetService(__uuidof(IAudioRenderClient), (void**)&defaultAudioRenderClient);
     }
+}
+
+AudioDeviceControl::AudioDeviceControl(wil::com_ptr<IMMDevice>& deviceRef) 
+{ 
+    ErrorHandler err;
+    device = deviceRef;
+    err = device->Activate(__uuidof(IAudioEndpointVolume), CLSCTX_ALL, NULL, (void**)&deviceVolume);
+    err = device->Activate(__uuidof(IAudioMeterInformation), CLSCTX_ALL, NULL, (void**)&deviceMeter);
+    err = deviceVolume->GetMasterVolumeLevelScalar(&volume);
+
+    wil::com_ptr<IPropertyStore> props;
+    err = device->OpenPropertyStore(STGM_READ, &props);
+    wil::unique_prop_variant val;
+    props->GetValue(PKEY_Device_FriendlyName, &val);
+    wil::unique_cotaskmem_string deviceIDPtr;
+    device->GetId(&deviceIDPtr);
+    deviceName = val.pwszVal;
+    deviceID = deviceIDPtr.get();
+    deviceID = deviceIDPtr.get();
+}
+
+CaptureSourceControl::CaptureSourceControl(wil::com_ptr<IAudioSessionControl2>& sessionRef)
+{
+    ErrorHandler err;
+
+    session = sessionRef;
+    err = session->QueryInterface(&sessionVolume); //this isn't in the documentation :(
+    err = session->QueryInterface(&sessionMeter);
+    //sessionMan->GetSimpleAudioVolume();
+
+    err = sessionVolume->GetMasterVolume(&volume);
 }
 
 //potentially fails if copyRef is waiting for callback, will be default initialized in that case
@@ -186,6 +305,7 @@ CaptureSourceStream::CaptureSourceStream()
 class __CaptureSourceStreamASyncCallback : public IMFAsyncCallback
 {
 public:
+    IMFAsyncResult* gotAudioAsyncID = nullptr;
     CaptureSourceStream* caller;
     HANDLE gotAudioEvent = NULL;
     RCMutexRef _canAccess;
@@ -218,7 +338,15 @@ public:
     ~__CaptureSourceStreamASyncCallback()
     {
         if (gotAudioEvent != NULL)
+        {
             CloseHandle(gotAudioEvent);
+            gotAudioEvent = NULL;
+        }
+        //if (gotAudioAsyncID != nullptr)
+        //{
+        //    gotAudioAsyncID->Release();
+        //    gotAudioAsyncID = nullptr;
+        //}
     }
 
     //manual memory management
@@ -241,9 +369,9 @@ void CaptureSourceStream::StartStream()
     gotAudioFunction->_canAccess = _accessGotAudioFunction;
     gotAudioFunction->gotAudioEvent = CreateEventA(NULL, false, false, NULL);
     err = captureClientDevice->SetEventHandle(gotAudioFunction->gotAudioEvent);
-    err = MFCreateAsyncResult(NULL, gotAudioFunction, NULL, &gotAudioAsyncID);
+    err = MFCreateAsyncResult(NULL, gotAudioFunction, NULL, &gotAudioFunction->gotAudioAsyncID);
     ResetEvent(gotAudioFunction->gotAudioEvent);
-    err = MFPutWaitingWorkItem(gotAudioFunction->gotAudioEvent, 0, gotAudioAsyncID, NULL);
+    err = MFPutWaitingWorkItem(gotAudioFunction->gotAudioEvent, 0, gotAudioFunction->gotAudioAsyncID, NULL);
 
     captureClientDevice->Start();
 }
@@ -260,7 +388,7 @@ void CaptureSourceStream::HandleAudioPacket()
 
     //std::cout << "Handle packet\n";
     ResetEvent(gotAudioFunction->gotAudioEvent);
-    err = MFPutWaitingWorkItem(gotAudioFunction->gotAudioEvent, 0, gotAudioAsyncID, NULL);
+    err = MFPutWaitingWorkItem(gotAudioFunction->gotAudioEvent, 0, gotAudioFunction->gotAudioAsyncID, NULL);
 
     BYTE* data;
     UINT32 numFrames;
@@ -333,7 +461,6 @@ CaptureSourceStream::CaptureSourceStream(CaptureSourceStream&& moveRef)
     {
         gotAudioFunction = moveRef.gotAudioFunction;
         gotAudioFunction->caller = this;
-        gotAudioAsyncID = moveRef.gotAudioAsyncID;
     }
 
     m_AudioCaptureClient = std::move(moveRef.m_AudioCaptureClient);
