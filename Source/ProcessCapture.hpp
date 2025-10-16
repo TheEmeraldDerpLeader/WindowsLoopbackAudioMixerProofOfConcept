@@ -15,8 +15,11 @@
 #include <mutex>
 #include <string>
 
+#include <Helpers.hpp>
+
 class CaptureSourceStream;
 class CaptureSourceControl;
+class CaptureSourceControlWatch;
 
 class RCMutex
 {
@@ -122,34 +125,26 @@ public:
 	AudioDeviceControl(wil::com_ptr<IMMDevice>& deviceRef);
 };
 
-class CaptureSourceControl
-{
-public:
-	CaptureSource source;
-
-	wil::com_ptr<IAudioSessionControl2> session;
-	wil::com_ptr<ISimpleAudioVolume> sessionVolume;
-	wil::com_ptr<IAudioMeterInformation> sessionMeter;
-	std::wstring& name() { return source.processName; }
-	float volume = 0;
-
-	CaptureSourceControl(){}
-	CaptureSourceControl(CaptureSource sourceCS) : source(sourceCS) {}
-	CaptureSourceControl(wil::com_ptr<IAudioSessionControl2>& sessionRef);
-};
-
 class CaptureSourceControlWatch : public IAudioSessionEvents
 {
 public:
 
 	std::atomic<unsigned int> refCount = 0;
+	float volume = 0;
 
 	HRESULT __stdcall OnChannelVolumeChanged(DWORD ChannelCount, float* NewChannelVolumeArray, DWORD ChangedChannel, LPCGUID EventContext) { return S_OK; }
 	HRESULT __stdcall OnDisplayNameChanged(LPCWSTR NewDisplayName, LPCGUID EventContext) { return S_OK; }
 	HRESULT __stdcall OnGroupingParamChanged(LPCGUID NewGroupingParam, LPCGUID EventContext) { return S_OK; }
 	HRESULT __stdcall OnIconPathChanged(LPCWSTR NewIconPath, LPCGUID EventContext) { return S_OK; }
 	HRESULT __stdcall OnSessionDisconnected(AudioSessionDisconnectReason DisconnectReason) { std::cout << "Session Disconnected!"; return S_OK; } //this one never runs bruh
-	HRESULT __stdcall OnSimpleVolumeChanged(float NewVolume, BOOL NewMute, LPCGUID EventContext) { std::cout << "Volume changed: " << NewVolume; return S_OK; }
+	HRESULT __stdcall OnSimpleVolumeChanged(float NewVolume, BOOL NewMute, LPCGUID EventContext)
+	{ 
+		std::cout << "Volume changed: " << NewVolume;
+		
+		volume = NewVolume;
+
+		return S_OK; 
+	}
 	HRESULT __stdcall OnStateChanged(AudioSessionState NewState) { return S_OK; }
 
 	ULONG __stdcall AddRef() { refCount++; return refCount; }
@@ -159,6 +154,34 @@ public:
 	HRESULT __stdcall QueryInterface(const IID& riid, void** ppvObject) { ppvObject = nullptr;  return S_OK; }
 };
 
+class CaptureSourceControl
+{
+public:
+	CaptureSource source;
+	wil::com_ptr<CaptureSourceControlWatch> callback;
+
+	wil::com_ptr<IAudioSessionControl2> session;
+	wil::com_ptr<ISimpleAudioVolume> sessionVolume;
+	wil::com_ptr<IAudioMeterInformation> sessionMeter;
+	std::wstring& name() { return source.processName; }
+	float _dummyVolume = -1;
+	float& volume() { if (callback != nullptr) return callback->volume; else return _dummyVolume; } //volume normally lasts longer than this instance
+
+	CaptureSourceControl(){}
+	CaptureSourceControl(CaptureSource sourceCS) : source(sourceCS) {}
+	CaptureSourceControl(wil::com_ptr<IAudioSessionControl2>& sessionRef);
+	CaptureSourceControl(wil::com_ptr<IAudioSessionControl2>& sessionRef, ErrorHandler* errPtr); //nullptr to use local error handler
+	CaptureSourceControl(wil::com_ptr<IAudioSessionControl2>& sessionRef, CaptureSource sourceCS);
+	void UpdateDeviceInfo(AudioDeviceControl& device);
+
+	CaptureSourceControl& operator=(CaptureSourceControl&& move);
+	CaptureSourceControl(CaptureSourceControl&& move) { this->operator=(std::move(move)); }
+	CaptureSourceControl& operator=(CaptureSourceControl& copy) = delete;
+	CaptureSourceControl(CaptureSourceControl& copy) = delete;
+	~CaptureSourceControl();
+};
+
+
 #include <chrono>
 
 class CSessionNotifications: public IAudioSessionNotification
@@ -167,15 +190,7 @@ public:
 
 	LONG m_cRefAll = 0;  
 
-	//if lock would be a compare and swap atomic action
-	//if am tries to access, it locks its queue. this sees it is locked, so it sets lock and starts writing to other queue. When am finishes, it removes lock and sets curQueue to other (maybe use std::atomic)
-	//if this tries to access, it locks its queue. Am sees this and sets curQueue to other then skips. This way this will start modifying other queue once its done. When am next checks this, it will first check the old queue and move items fromn it
-
-	bool amLock = false; //whether am has curQueue locked
-	bool thisLock = false; //whether this has curQueue locked
-	int curQueue = 0; //which queue this will try to write to
-	std::vector<CaptureSourceControl> sessionAddQueue1;
-	std::vector<CaptureSourceControl> sessionAddQueue2;
+	PipeQ<CaptureSourceControl> newSessions;
 	
 	~CSessionNotifications() { }
 
@@ -217,19 +232,21 @@ public:
 
 	HRESULT OnSessionCreated(IAudioSessionControl *pNewSession) //guarentee that only one of this function runs at a time
 	{ //why does it run twice ;_;
-		std::cout << "New Session!";
+		ErrorHandler err;
+
+		std::cout << "New Session: ";
+
+		wil::com_ptr<IAudioSessionControl2> sessionFull;
+		err = pNewSession->QueryInterface<IAudioSessionControl2>(&sessionFull);
+		CaptureSourceControl test = CaptureSourceControl(sessionFull,&err);
+
+		std::wcout << test.name() << '\n';
+
+		if (err.wasTripped == false)
+			newSessions.push_back(CaptureSourceControl(sessionFull));
 
 		return S_OK;
 	}
 };
 
-// audiopolicy.h
-//Create IAudioSessionManager2
-//Call GetSessionEnumerator to get IAudioSessionEnumerator
-//Call RegisterSessionNotification to create a callback for when new sessions are created
-//Use enumerator to get sessions
-//Let user pick a session
-//Use enumerator to get an IAudioSessionControl for that session
-//Call RegisterAudioSessionNotification to get a IAudioSessionEvents for watch for session being removed?
-//Call IAudioSessionManager::GetSimpleAudioVolume to get ISimpleAudioVolume for that session
-//Program can now control the volume of that process
+int NameFromProcessID(DWORD pid, std::wstring& strOut);

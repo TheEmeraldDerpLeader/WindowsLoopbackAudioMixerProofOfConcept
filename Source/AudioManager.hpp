@@ -12,11 +12,6 @@
 
 #include "ProcessCapture.hpp"
 
-//To Do:
-
-//Setup vectors on constructor
-//implement CSCWatch and CSessionNotifications
-
 class AudioManager
 {
 public:
@@ -45,19 +40,8 @@ public:
 	void OffsetSessionVolume(int deviceIndex, int sessionIndex, float offset);
 	void SetAllSessionVolumes(int deviceIndex, float val);
 	void SetDeviceVolume(int deviceIndex, float val);
+
+	void HandleNewSessions();
 };
 
-int NameFromProcessID(DWORD pid, std::wstring& strOut);
 void GetAllAudioSessionSources(std::vector<CaptureSource>& sources);
-
-
-// audiopolicy.h
-//Create IAudioSessionManager2
-//Call GetSessionEnumerator to get IAudioSessionEnumerator
-//Call RegisterSessionNotification to create a callback for when new sessions are created
-//Use enumerator to get sessions
-//Let user pick a session
-//Use enumerator to get an IAudioSessionControl for that session
-//Call RegisterAudioSessionNotification to get a IAudioSessionEvents for watch for session being removed?
-//Call IAudioSessionManager::GetSimpleAudioVolume to get ISimpleAudioVolume for that session
-//Program can now control the volume of that process

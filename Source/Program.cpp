@@ -8,10 +8,6 @@
 #include <ProcessCapture.hpp>
 
 /*Todo:
-    Get volume magnitude of program
-    Use SimpleAudioVolume to control program volume
-        - keep track of audio session ID
-        - create a ISimpleAudioVolume from IAudioSessionManager
     Keybind system to tie volume control to keybinds
         - complex keybinds, e.g. ctrl shift up arrow, tap ctrl to lower volume tap shift to raise volume
 */
@@ -105,10 +101,12 @@ public:
         am.SetSessionVolume(device, session, v);
         std::cout << "Volume: " << am.GetSessionVolume(device, session) << '\n';
     }
-    void CommandFullPrint()
+    void CommandResetSessions()
     {
         am.ResetSessions();
-
+    }
+    void CommandFullPrint()
+    {
         for (int i = 0; i < am.devices.size(); i++)
         {
             std::wcout << "Device: " << am.devices[i].deviceName << "\n";
@@ -126,7 +124,15 @@ public:
         std::cin >> ctrlSes;
         float vol = 0;
         std::cin >> vol;
-        am.SetSessionVolume(ctrlDev, ctrlSes, vol);
+        for (int i = 0; i < am.devices.size(); i++)
+        {
+            std::wcout << "Device: " << am.devices[i].deviceName << "\n";
+            for (int j = 0; j < am.sessions[i].size(); j++)
+            {
+                std::wcout << '\t' << am.sessions[i][j].volume() << '\n';
+            }
+            std::cout << '\n';
+        }
 
         //am.SetAllSessionVolumes(ctrlDev, vol);
     }
@@ -212,6 +218,10 @@ int main2()
             int session = cli.TryReadInt();
             float vol = cli.TryReadFloat();
             cli.CommandSetVolume(device, session, vol);
+        }
+        if (command == "resetsessions")
+        {
+            cli.CommandResetSessions();
         }
         if (command == "fullprint")
         {

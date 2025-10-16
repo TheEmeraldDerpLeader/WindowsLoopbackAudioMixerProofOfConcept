@@ -17,7 +17,8 @@
 #include <vector>
 #include <mutex>
 
-//based on code from https://github.com/microsoft/Windows-classic-samples/tree/main/Samples/ApplicationLoopback
+//loopback capture based on code from https://github.com/microsoft/Windows-classic-samples/tree/main/Samples/ApplicationLoopback
+//other stuff is og
 
 class AsyncCallbackSetup : public IActivateAudioInterfaceCompletionHandler
 {
@@ -273,14 +274,121 @@ AudioDeviceControl::AudioDeviceControl(wil::com_ptr<IMMDevice>& deviceRef)
 
 CaptureSourceControl::CaptureSourceControl(wil::com_ptr<IAudioSessionControl2>& sessionRef)
 {
-    ErrorHandler err;
+    ErrorHandler err; err.printErrors = false;
 
     session = sessionRef;
     err = session->QueryInterface(&sessionVolume); //this isn't in the documentation :(
     err = session->QueryInterface(&sessionMeter);
     //sessionMan->GetSimpleAudioVolume();
 
-    err = sessionVolume->GetMasterVolume(&volume);
+    DWORD processID;
+    err = session->GetProcessId(&processID);
+    if (err.wasTripped == true) //provided session is not a process
+        return;
+    std::wstring name;
+    wil::unique_cotaskmem_string sessionIDPtr;
+    err = session->GetSessionInstanceIdentifier(&sessionIDPtr);
+
+    err = NameFromProcessID(processID, name);
+
+    callback = new CaptureSourceControlWatch();
+        
+    err = session->RegisterAudioSessionNotification(callback.get());
+
+    err = sessionVolume->GetMasterVolume(&volume());
+
+    
+    source = CaptureSource(name, processID, L"debug", L"debug", sessionIDPtr.get());
+
+}
+
+CaptureSourceControl::CaptureSourceControl(wil::com_ptr<IAudioSessionControl2>& sessionRef, ErrorHandler* errPtr) //unfortunately shouldn't use placement new in a constructor bc that will default initialize everything again
+{
+    ErrorHandler localErr;
+    if (errPtr == nullptr)
+        errPtr = &localErr;
+    ErrorHandler& err = *errPtr;
+
+    session = sessionRef;
+    err = session->QueryInterface(&sessionVolume); //this isn't in the documentation :(
+    err = session->QueryInterface(&sessionMeter);
+    //sessionMan->GetSimpleAudioVolume();
+
+    DWORD processID;
+    err = session->GetProcessId(&processID);
+    if (err.wasTripped == true) //provided session is not a process
+        return;
+    std::wstring name;
+    wil::unique_cotaskmem_string sessionIDPtr;
+    err = session->GetSessionInstanceIdentifier(&sessionIDPtr);
+
+    err = NameFromProcessID(processID, name);
+
+    callback = new CaptureSourceControlWatch();
+
+    err = session->RegisterAudioSessionNotification(callback.get());
+
+    err = sessionVolume->GetMasterVolume(&volume());
+
+
+    source = CaptureSource(name, processID, L"debug", L"debug", sessionIDPtr.get());
+}
+
+CaptureSourceControl::CaptureSourceControl(wil::com_ptr<IAudioSessionControl2>& sessionRef, CaptureSource sourceCS)
+{
+    ErrorHandler err; err.printErrors = false;
+
+    session = sessionRef;
+    err = session->QueryInterface(&sessionVolume); //this isn't in the documentation :(
+    err = session->QueryInterface(&sessionMeter);
+    //sessionMan->GetSimpleAudioVolume();
+
+    DWORD processID;
+    err = session->GetProcessId(&processID);
+    if (err.wasTripped == true) //provided session is not a process
+        return;
+    std::wstring name;
+    wil::unique_cotaskmem_string sessionIDPtr;
+    err = session->GetSessionInstanceIdentifier(&sessionIDPtr);
+
+    err = NameFromProcessID(processID, name);
+
+    callback = new CaptureSourceControlWatch();
+
+    err = session->RegisterAudioSessionNotification(callback.get());
+
+    err = sessionVolume->GetMasterVolume(&volume());
+
+
+    source = sourceCS;
+}
+
+void CaptureSourceControl::UpdateDeviceInfo(AudioDeviceControl& device)
+{
+    source.deviceID = device.deviceID;
+    source.deviceName = device.deviceName;
+}
+
+CaptureSourceControl& CaptureSourceControl::operator=(CaptureSourceControl&& move)
+{
+#define MOV(name) name = std::move(move.name)
+    MOV(source);
+    MOV(callback);
+    //probs don't need a custom move
+
+    MOV(session);
+    MOV(sessionVolume);
+    MOV(sessionMeter);
+    MOV(_dummyVolume);
+
+    return *this;
+#undef MOV
+}
+
+CaptureSourceControl::~CaptureSourceControl()
+{
+    if (callback != nullptr)
+        session->UnregisterAudioSessionNotification(callback.get());
 }
 
 //potentially fails if copyRef is waiting for callback, will be default initialized in that case
@@ -505,4 +613,40 @@ CaptureSourceStream::~CaptureSourceStream()
         isRendering = false;
         defaultAudioClient->Stop();
     }
+}
+
+int NameFromProcessID(DWORD pid, std::wstring& strOut)
+{
+    wil::unique_handle process(OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, pid));
+    if (process == NULL)
+    {
+        strOut = L"Error: Invalid Process ID";
+        return -1;
+    }
+    static int largestPath = 128; //largest path name ever recorded when this function has run
+    std::vector<wchar_t> processName; processName.resize(largestPath);
+    DWORD nameSize = 0;
+    while (true)
+    {
+        nameSize = GetProcessImageFileNameW(process.get(), processName.data(), processName.size());
+        if (nameSize == processName.size()) //recorded name took up entire name buffer, name might be longer
+            processName.resize(nameSize*2);
+        else //recorded name is fully within buffer
+            break;
+    }
+    largestPath = processName.size();
+    processName.resize(nameSize);
+    std::wstring& out = strOut; out.clear();
+    //just get executable name
+    int index = 0;
+    for (int i = nameSize-1; i >= 0; i--)
+        if (processName[i] == '\\')
+        {
+            index = i+1;
+            break;
+        }
+    for (int i = index; i < nameSize; i++)
+        out.push_back(processName[i]);
+
+    return S_OK;
 }

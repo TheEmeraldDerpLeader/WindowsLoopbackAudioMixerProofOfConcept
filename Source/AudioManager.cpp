@@ -39,42 +39,6 @@ AudioManager::~AudioManager()
             err = sessions[i][j].session->UnregisterAudioSessionNotification(sessionWatches[i][j].get());
 }
 
-int NameFromProcessID(DWORD pid, std::wstring& strOut)
-{
-    wil::unique_handle process(OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, pid));
-    if (process == NULL)
-    {
-        strOut = L"Error: Invalid Process ID";
-        return -1;
-    }
-    static int largestPath = 128; //largest path name ever recorded when this function has run
-    std::vector<wchar_t> processName; processName.resize(largestPath);
-    DWORD nameSize = 0;
-    while (true)
-    {
-        nameSize = GetProcessImageFileNameW(process.get(), processName.data(), processName.size());
-        if (nameSize == processName.size()) //recorded name took up entire name buffer, name might be longer
-            processName.resize(nameSize*2);
-        else //recorded name is fully within buffer
-            break;
-    }
-    largestPath = processName.size();
-    processName.resize(nameSize);
-    std::wstring& out = strOut; out.clear();
-    //just get executable name
-    int index = 0;
-    for (int i = nameSize-1; i >= 0; i--)
-        if (processName[i] == '\\')
-        {
-            index = i+1;
-            break;
-        }
-    for (int i = index; i < nameSize; i++)
-        out.push_back(processName[i]);
-
-    return S_OK;
-}
-
 void GetAllAudioSessionSources(std::vector<CaptureSource>& sources)
 {
     sources.clear();
@@ -243,21 +207,17 @@ void AudioManager::ResetSessions()
                 std::wstring name;
                 wil::unique_cotaskmem_string sessionIDPtr;
                 err = sessionFull->GetSessionInstanceIdentifier(&sessionIDPtr);
-                if (NameFromProcessID(processID, name) == S_OK)
+                if (NameFromProcessID(processID, name) == S_OK) //verify that this session corresponds to a process
                 {
-                    CaptureSource c = CaptureSource(name, processID, deviceID, deviceName, sessionIDPtr.get());
-
-                    wil::com_ptr<IAudioSessionControl> session;
-                    wil::com_ptr<IAudioSessionControl2> sessionFull;
+                    //wil::com_ptr<IAudioSessionControl> session;
+                    //wil::com_ptr<IAudioSessionControl2> sessionFull;
                     err = sessionEnum->GetSession(i, &session);
                     err = session->QueryInterface<IAudioSessionControl2>(&sessionFull);
 
-                    sessionsCur.push_back(CaptureSourceControl(sessionFull));
+                    sessionsCur.push_back(CaptureSourceControl(sessionFull, CaptureSource(name, processID, deviceID, deviceName, sessionIDPtr.get())));
 
                     sessionWatchCur.push_back(new CaptureSourceControlWatch());
                     err = sessionFull->RegisterAudioSessionNotification(sessionWatchCur.back().get());
-
-                    sessionsCur.back().source = std::move(c);
                 }
 
             }
@@ -289,11 +249,16 @@ std::vector<float> AudioManager::GetSessionVolumes(int deviceIndex)
 {
     std::vector<float> out;
 
+    if (deviceIndex < 0 || deviceIndex >= devices.size())
+        return out;
+    float dVol = GetDeviceVolume(deviceIndex);
+
     out.resize(sessions[deviceIndex].size());
     for (int j = 0; j < out.size(); j++)
     {
         HRESULT err = sessions[deviceIndex][j].sessionVolume->GetMasterVolume(&(out[j]));
-        if (err != S_OK)
+        out[j] *= dVol;
+        if (err != S_OK || dVol < 0)
             out[j] = -1;
     }
 
@@ -307,11 +272,13 @@ float AudioManager::GetSessionVolume(int deviceIndex, int sessionIndex)
     if (sessionIndex < 0 || sessionIndex >= sessions[deviceIndex].size())
         return -1;
 
+    float dVol = GetDeviceVolume(deviceIndex);
+
     float vol;
     HRESULT err = sessions[deviceIndex][sessionIndex].sessionVolume->GetMasterVolume(&vol);
-    if (err != S_OK)
+    if (err != S_OK || dVol < 0)
         vol = -1;
-    return vol;
+    return dVol*vol;
 }
 float AudioManager::GetDeviceVolume(int deviceIndex)
 {
@@ -337,7 +304,7 @@ void AudioManager::SetDirectSessionVolume(int deviceIndex, int sessionIndex, flo
 
     HRESULT err = sessions[deviceIndex][sessionIndex].sessionVolume->SetMasterVolume(val,nullptr);
 
-    sessions[deviceIndex][sessionIndex].volume = val;
+    sessions[deviceIndex][sessionIndex].volume() = val;
 }
 void AudioManager::SetSessionVolume(int deviceIndex, int sessionIndex, float val)
 {
@@ -357,8 +324,6 @@ void AudioManager::SetSessionVolume(int deviceIndex, int sessionIndex, float val
     int highestSession = 0; //highest session after volume change
     float highestVol;
 
-    for (int i = 0; i < sessionVolumes.size(); i++) //converrt to true volumes
-        sessionVolumes[i] *= initD;
     sessionVolumes[sessionIndex] = val;
     
     //get highest volume after change
@@ -397,7 +362,7 @@ void AudioManager::SetSessionVolume(int deviceIndex, int sessionIndex, float val
     //todo
     //function to flag session or device for deletion
     //function to clear deleted sessions and devices
-    //work on system to add new sessions
+    //work on system to add new sessions DONE
     //true set volume that modifies other volumes DONE
     //finish set endpoint volume DONE
     //when device volume is changed on PC, treat it as global volume change
@@ -437,9 +402,6 @@ void AudioManager::SetAllSessionVolumes(int deviceIndex, float val)
     SetDeviceVolume(deviceIndex, val);
     for (int i = 0; i < sessions[deviceIndex].size(); i++)
         SetDirectSessionVolume(deviceIndex, i, 1.0f);
-
-    float initD = GetDeviceVolume(deviceIndex);
-    std::vector<float> sessionVolumes = GetSessionVolumes(deviceIndex);
 }
 void AudioManager::SetDeviceVolume(int deviceIndex, float val)
 {
@@ -453,4 +415,19 @@ void AudioManager::SetDeviceVolume(int deviceIndex, float val)
     devices[deviceIndex].deviceVolume->SetMasterVolumeLevelScalar(val, nullptr);
 
     devices[deviceIndex].volume = val;
+}
+
+void AudioManager::HandleNewSessions()
+{
+    for (int i = 0; i < newSessionWatch.size(); i++)
+    {
+        PipeQ<CaptureSourceControl>& newSessions = newSessionWatch[i]->newSessions;
+        CaptureSourceControl newSess;
+        while (newSessions.try_pop(&newSess) == true)
+        {
+            sessions[i].push_back(newSess);
+            std::wcout << "Added new session to device " << devices[i].deviceName <<  " called " << sessions[i].back().name() << '\n';
+            sessions[i].back().UpdateDeviceInfo(devices[i]);
+        }
+    }
 }
