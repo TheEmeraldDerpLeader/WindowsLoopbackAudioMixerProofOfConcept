@@ -107,6 +107,7 @@ public:
     }
     void CommandFullPrint()
     {
+        am.HandleNewSessions();
         for (int i = 0; i < am.devices.size(); i++)
         {
             std::wcout << "Device: " << am.devices[i].deviceName << "\n";

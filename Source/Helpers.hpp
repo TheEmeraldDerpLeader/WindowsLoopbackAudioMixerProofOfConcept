@@ -98,7 +98,7 @@ public:
 	{
 		if (head == nullptr) //no data allocated
 			return false;
-		if (head == tail && pushOff >= popOff) //no data in head region
+		if (head == tail && popOff >= pushOff) //no data in head region
 			return false;
 
 		if (out != nullptr)
@@ -125,7 +125,7 @@ public:
 	{
 		if (head == nullptr) //no data allocated
 			throw std::runtime_error("Attempted to pop from empty pipe queue");
-		if (head == tail && pushOff >= popOff) //no data in head region
+		if (head == tail && popOff >= pushOff) //no data in head region
 			throw std::runtime_error("Attempted to pop from empty pipe queue");
 
 		T temp = std::move(head->data[popOff]);

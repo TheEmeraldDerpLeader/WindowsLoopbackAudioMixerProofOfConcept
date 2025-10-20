@@ -232,19 +232,21 @@ public:
 
 	HRESULT OnSessionCreated(IAudioSessionControl *pNewSession) //guarentee that only one of this function runs at a time
 	{ //why does it run twice ;_;
-		ErrorHandler err;
+		ErrorHandler err; err.printErrors = false;
 
-		std::cout << "New Session: ";
 
 		wil::com_ptr<IAudioSessionControl2> sessionFull;
 		err = pNewSession->QueryInterface<IAudioSessionControl2>(&sessionFull);
 		CaptureSourceControl test = CaptureSourceControl(sessionFull,&err);
 
-		std::wcout << test.name() << '\n';
-
 		if (err.wasTripped == false)
-			newSessions.push_back(CaptureSourceControl(sessionFull));
+		{
+			std::cout << "New Session: ";
+			std::wcout << test.name() << '\n';
 
+			newSessions.push_back(CaptureSourceControl(sessionFull));
+		}
+		
 		return S_OK;
 	}
 };

@@ -419,15 +419,20 @@ void AudioManager::SetDeviceVolume(int deviceIndex, float val)
 
 void AudioManager::HandleNewSessions()
 {
+    ErrorHandler err;
+
     for (int i = 0; i < newSessionWatch.size(); i++)
     {
         PipeQ<CaptureSourceControl>& newSessions = newSessionWatch[i]->newSessions;
         CaptureSourceControl newSess;
         while (newSessions.try_pop(&newSess) == true)
         {
-            sessions[i].push_back(newSess);
+            sessions[i].push_back(std::move(newSess));
             std::wcout << "Added new session to device " << devices[i].deviceName <<  " called " << sessions[i].back().name() << '\n';
             sessions[i].back().UpdateDeviceInfo(devices[i]);
+
+            sessionWatches[i].push_back(new CaptureSourceControlWatch());
+            err = sessions[i].back().session->RegisterAudioSessionNotification(sessionWatches[i].back().get());
         }
     }
 }
